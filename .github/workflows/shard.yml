@@ -1,38 +1,282 @@
-name: nightly-link
-version: 0.1.0
+# Workflow that builds Quassel on various Linux distros, and creates packages for both Windows and macOS.
+# For tagged pushes, a draft release is automatically created, using the tag message as release description
+# and attaching Windows and macOS builds, as well as the source archive.
+name: Quassel CI
 
-authors:
-  - Oleh Prypin <oleh@pryp.in>
+on:
+  push:
+  pull_request:
+  schedule:
+    # * is a special character in YAML so you have to quote this string
+    # Run at 13:37 on the 14th of every month (odd time to reduce load)
+    - cron: '37 13 14 * *'
 
-description: |
-  Downloads the latest "nightly" build/artifact from a continuous testing workflow
+# Can't use simpler definition of [ push, pull_request, schedule ]
+# See https://www.jeffgeerling.com/blog/2020/running-github-actions-workflow-on-schedule-and-other-events
 
-targets:
-  server:
-    main: src/nightly_link.cr
+defaults:
+  run:
+    shell: bash
 
-dependencies:
-  retour:
-    github: oprypin/retour
-  jwt:
-    github: crystal-community/jwt
-  halite:
-    github: icyleaf/halite
-  memory_cache:
-    github: kostya/memory_cache
-  tasker:
-    github: spider-gazelle/tasker
-  sqlite3:
-    github: crystal-lang/crystal-sqlite3
-  markd:
-    github: icyleaf/markd
-  future:
-    github: crystal-community/future.cr
+jobs:
 
-development_dependencies:
-  spec_assert:
-    github: oprypin/spec-assert
-  webmock:
-    github: manastech/webmock.cr
+# ------------------------------------------------------------------------------------------------------------------------------------------
+  build-linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    container: quassel/quassel-build-env:${{ matrix.dist }}
+    strategy:
+      fail-fast: false
+      matrix:
+        dist: [ debian-stable, debian-testing, ubuntu-noble, ubuntu-oracular, ubuntu-plucky ]
+        cxx: [ 'g++', 'clang++' ]
+        with-kde: [ -DWITH_KDE=ON ]
+        extra-options: [ -DWITH_WEBENGINE=ON ]
+        include:
+          # Baseline, test more combinations
+          - dist: ubuntu-noble
+            with-kde: -DWITH_KDE=ON
+            extra-options: -DWITH_WEBENGINE=OFF
+          - dist: ubuntu-noble
+            with-kde: -DWITH_KDE=OFF
+            extra-options: -DWITH_WEBENGINE=OFF
+    env:
+        CXX: ${{ matrix.cxx }}
 
-license: AGPL-3.0
+    steps:
+    - name: Check out source code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: ${{ github.job }}-${{ matrix.dist }}-${{ matrix.cxx }}
+
+    - name: Configure
+      run: |
+        mkdir build
+        cd build && cmake $GITHUB_WORKSPACE \
+                          -GNinja \
+                          -DCMAKE_BUILD_TYPE=Release \
+                          -DBUILD_TESTING=ON \
+                          -DFATAL_WARNINGS=ON \
+                          ${{ matrix.with-kde }} \
+                          ${{ matrix.extra-options }}
+
+    - name: Build
+      run: cd build && ninja
+
+    - name: Run tests
+      run: cd build && ctest
+
+    - name: Install
+      run: cd build && DESTDIR=$GITHUB_WORKSPACE/image ninja install
+
+# ------------------------------------------------------------------------------------------------------------------------------------------
+  build-macos:
+    name: macOS
+    runs-on: macos-${{ matrix.osversion }}
+    strategy:
+      fail-fast: false
+      matrix:
+        osversion: [14, latest]
+
+    steps:
+    - name: Select Xcode version
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        # Newer Xcode versions may not officially be supported by Qt
+        # Check https://doc.qt.io/qt-5/macos.html
+        xcode-version: '15.x'
+
+    - name: Check out source code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # so git-describe works
+        submodules: recursive
+
+    - name: Fetch tag information
+      if: startsWith(github.ref, 'refs/tags/')
+      run: git fetch -f origin $GITHUB_REF:$GITHUB_REF
+
+    - name: Install dependencies
+      # Skip "brew update" as it can trigger 50+ minutes of updating.
+      # GitHub Actions intentionally disables the default auto-update on their
+      # macOS CI images (and macOS CI images usually update once a week).
+      #
+      # See https://github.com/actions/virtual-environments/issues/2173
+      # > We've set no auto-update intentionally here [...]
+      # And https://github.com/microsoft/appcenter/issues/293
+      #
+      # If Homebrew begins failing in the future due to out-of-date versions,
+      # it can be re-enabled here as follows...
+      # run: brew update && [below command]
+      run: brew install boost ccache qt@5
+
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: ${{ github.job }}-${{ matrix.osversion }}
+
+    - name: Configure
+      continue-on-error: true # Windows builds are broken atm
+      run: |
+        mkdir build
+        cd build && cmake $GITHUB_WORKSPACE \
+                          -GNinja \
+                          -DWANT_CORE=ON \
+                          -DWANT_QTCLIENT=ON \
+                          -DWANT_MONO=ON \
+                          -DCMAKE_PREFIX_PATH=$(brew --prefix)/opt/qt@5 \
+                          -DCMAKE_INSTALL_PREFIX=$GITHUB_WORKSPACE/bundles \
+                          -DCMAKE_BUILD_TYPE=Release \
+                          -DBUILD_TESTING=ON \
+                          -DFATAL_WARNINGS=OFF \
+                          -DENABLE_SHARED=OFF \
+                          -DBUNDLE=ON \
+
+
+    - name: Build
+      run: cd build && ninja
+
+    - name: Run tests
+      run: cd build && ctest
+
+    - name: Install
+      run: cd build && ninja install
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: macOS-${{ matrix.osversion }}
+        path: ${{ github.workspace }}/bundles/*.dmg
+
+# ------------------------------------------------------------------------------------------------------------------------------------------
+  build-windows:
+    name: Windows
+    runs-on: windows-latest
+    continue-on-error: true
+    if: false # Windows builds are broken atm
+    env:
+      WORKSPACE: ${{ github.workspace }}
+      CRAFT: /C/CraftMaster/windows-msvc2019_64-cl/craft/bin/craft.py
+
+    steps:
+    - name: Check out source code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # so git-describe works
+        submodules: recursive
+
+    - name: Fetch tag information
+      if: startsWith(github.ref, 'refs/tags/')
+      run: git fetch -f origin $GITHUB_REF:$GITHUB_REF
+
+    - name: Clone CraftMaster
+      run: git clone --depth=1 https://invent.kde.org/packaging/craftmaster.git /C/CraftMaster/CraftMaster
+
+    - name: Configure CraftMaster
+      run: python /C/CraftMaster/CraftMaster/CraftMaster.py --config $WORKSPACE/.craftsettings.ini --variables "WORKSPACE=$WORKSPACE"
+
+    - name: Add Quassel blueprint
+      run: python $CRAFT --add-blueprint-repository https://github.com/quassel/craft-blueprints-quassel.git
+
+    - name: Install NSIS
+      run: python $CRAFT dev-utils/nsis
+
+    - name: Install dependencies
+      run: python $CRAFT --install-deps quassel/quassel
+
+    - name: Build
+      run: python $CRAFT --no-cache --src-dir $WORKSPACE quassel/quassel
+
+    - name: Run tests
+      run: python $CRAFT --no-cache --src-dir $WORKSPACE --test quassel/quassel
+
+    - name: Package
+      run: python $CRAFT --no-cache --src-dir $WORKSPACE --package quassel/quassel
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: Windows
+        path: ${{ github.workspace }}/packages/*
+
+# ------------------------------------------------------------------------------------------------------------------------------------------
+  post-build:
+    name: Post-Build
+    runs-on: ubuntu-latest
+    needs: [ build-linux, build-macos ] # Windows builds are broken atm
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+    - name: Check out source code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Fetch tag information
+      if: startsWith(github.ref, 'refs/tags/')
+      run: git fetch -f origin $GITHUB_REF:$GITHUB_REF
+
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+
+    - name: List artifacts
+      run: ls -lhR artifacts
+
+    - name: Check artifacts
+      continue-on-error: true # Windows builds are broken atm
+      run: |
+        # Sanity check: We should have exactly 8 files matching the given patterns
+        [[ 8 -eq $(find artifacts/ \( -type f -name 'Quassel*.dmg' -o -name 'quassel*.exe' -o -name 'quassel*.7z' \) -printf '.' | wc -c) ]]
+
+    - name: Create release notes
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        # Use the tag's annotation as release notes
+        TAGNAME=$(git rev-parse --abbrev-ref $GITHUB_REF)
+        MESSAGE=$(git tag -l --format='%(contents)' $TAGNAME | perl -ne 'print if not /-----BEGIN PGP SIGNATURE-----/../-----END PGP SIGNATURE-----/')
+        echo -e "Quassel $TAGNAME\n\n$MESSAGE" > release_notes.txt
+
+    - name: Prepare source archive
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        mkdir assets
+        TAGNAME=$(git rev-parse --abbrev-ref $GITHUB_REF)
+        PREFIX=quassel-$TAGNAME/
+        TAR_BASE=assets/quassel-$TAGNAME
+        git archive --format=tar --prefix=$PREFIX -o $TAR_BASE.tar $TAGNAME
+        git submodule foreach --recursive "git archive --prefix=$PREFIX -o $TAR_BASE-\$sha1.tar HEAD"
+        # Workaround for https://lists.gnu.org/archive/html/bug-tar/2008-08/msg00002.html
+        for t in $TAR_BASE-*.tar; do tar --concatenate --file=$TAR_BASE.tar.xz "$t"; done
+        xz $TAR_BASE.tar
+        rm $TAR_BASE-*.tar
+
+    - name: Prepare packages for release
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        TAGNAME=$(git rev-parse --abbrev-ref $GITHUB_REF)
+        for type in Client Core Mono; do
+          mv artifacts/macOS/Quassel$type*.dmg assets/
+        done
+        mv artifacts/Windows/quassel-*.exe assets/quassel-windows-setup-$TAGNAME.exe
+        mv artifacts/Windows/quassel-*.7z assets/quassel-windows-$TAGNAME.7z
+
+    - name: Create checksums for release assets
+      if: startsWith(github.ref, 'refs/tags/')
+      run: find assets/ -type f -execdir sh -c 'sha256sum "$1" > "$1.sha256sum"' _ {} \;
+
+    - name: Create draft release
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        # The stock upload-release-asset action can only handle single files
+        # Instead, use the hub utility so we can upload all assets at once
+        assets=()
+        for asset in assets/*; do assets+=("-a" "$asset"); done
+        hub release create -d "${assets[@]}" -F release_notes.txt `git rev-parse --abbrev-ref $GITHUB_REF`
