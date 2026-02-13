@@ -2,7 +2,7 @@
  * MySpace APIs - 我的空间数据管理
  */
 import { apiClient } from "./client";
-import { getCache, setCache, removeCache, CACHE_PREFIX, CACHE_TTL, extendCache, setCacheWithETag } from "@site/src/utils/cache";
+import { getCache, setCache, removeCache, getPromptCacheKey, removeETag, CACHE_PREFIX, CACHE_TTL, extendCache, setCacheWithETag } from "@site/src/utils/cache";
 
 /**
  * 获取 MySpace 完整数据（带 ETag 优化）
@@ -15,7 +15,6 @@ export async function getMySpace() {
 
   // 防御性检查：ETag 存在但数据为 null
   if (cachedEtag && !cachedData) {
-    console.warn("[MySpace] Found ETag but no cached data, clearing ETag");
     removeCache(`${cacheKey}_etag`);
   }
 
@@ -30,7 +29,6 @@ export async function getMySpace() {
 
     // 处理 304 Not Modified
     if (response.status === 304) {
-      console.log("[MySpace] Data unchanged, extending cache");
       extendCache(cacheKey, CACHE_TTL.MYSPACE);
       return cachedData;
     }
@@ -40,13 +38,8 @@ export async function getMySpace() {
     const newData = response.data;
 
     setCacheWithETag(cacheKey, newData, CACHE_TTL.MYSPACE, newEtag);
-    if (newEtag) {
-      // ETag cached
-    }
-
     // Clear stale userprompt caches by comparing updatedAt
     if (newData?.items) {
-      const { removeCache, getPromptCacheKey } = await import("@site/src/utils/cache");
       let clearedCount = 0;
 
       newData.items.forEach((item: any) => {
@@ -62,10 +55,6 @@ export async function getMySpace() {
           }
         }
       });
-
-      if (clearedCount > 0) {
-        // Cleared stale userprompt cache(s)
-      }
     }
 
     return newData;
@@ -88,7 +77,6 @@ export async function getMySpace() {
  */
 export function clearMySpaceCache() {
   removeCache(CACHE_PREFIX.MYSPACE);
-  const { removeETag } = require("@site/src/utils/cache");
   removeETag(CACHE_PREFIX.MYSPACE);
 }
 

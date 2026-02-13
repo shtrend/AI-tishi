@@ -13,6 +13,7 @@ import {
   CACHE_TTL,
   CACHE_PREFIX,
   getETag,
+  removeETag,
   setCacheWithETag,
   extendCache,
   extendCacheIfNeeded,
@@ -261,7 +262,7 @@ export async function updatePrompt(
     remark?: string;
     notes?: string;
     share?: boolean;
-  }
+  },
 ) {
   if (!id) throw new Error("prompt id is required");
   try {
@@ -283,7 +284,7 @@ export async function updatePrompt(
 
     return response.data;
   } catch (error) {
-    error("Error updating prompt:", error);
+    console.error("Error updating prompt:", error);
     throw error;
   }
 }
@@ -362,7 +363,6 @@ export async function getCommPrompts(page: number, pageSize: number, sortField: 
     const newEtag = response.headers["etag"];
 
     // Clear stale caches by comparing updatedAt
-    const { removeCache, getPromptCacheKey } = await import("@site/src/utils/cache");
     let clearedCount = 0;
 
     listItems.forEach((item: { id: number; updatedAt: string }) => {
@@ -375,10 +375,6 @@ export async function getCommPrompts(page: number, pageSize: number, sortField: 
         clearedCount++;
       }
     });
-
-    if (clearedCount > 0) {
-      console.log(`[getCommPrompts] Cleared ${clearedCount} stale prompt cache(s)`);
-    }
 
     // Fetch prompts (only uncached or rebuilt ones will be fetched)
     const ids = listItems.map((item: { id: number }) => item.id);
@@ -416,8 +412,6 @@ export async function searchCards(tags: string[], search: string, lang: string =
 
     // 防御性检查
     if (cachedEtag && !cachedData) {
-      console.warn("[Search] Found ETag but no cached data, clearing ETag");
-      const { removeETag } = require("@site/src/utils/cache");
       removeETag(cacheKey);
     }
 
@@ -443,7 +437,6 @@ export async function searchCards(tags: string[], search: string, lang: string =
 
       // Handle 304 Not Modified
       if (responseIds.status === 304) {
-        console.log("[Search] Data unchanged, extending cache");
         extendCache(cacheKey, CACHE_TTL.SEARCH_RESULTS);
         return cachedData;
       }
@@ -457,7 +450,6 @@ export async function searchCards(tags: string[], search: string, lang: string =
     } catch (error) {
       // Handle 304 in catch
       if (error?.response?.status === 304) {
-        console.log("[Search] 304 handled in catch, extending cache");
         extendCache(cacheKey, CACHE_TTL.SEARCH_RESULTS);
         return cachedData;
       }
