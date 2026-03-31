@@ -27,13 +27,18 @@ interface PromptDetailModalProps {
   };
 }
 
-export const PromptDetailModalComponent: React.FC<PromptDetailModalProps> = ({ open, onCancel, data }) => {
+const PromptDetailModalComponent: React.FC<PromptDetailModalProps> = ({ open, onCancel, data }) => {
   if (!data) return null;
 
-  const { copied, updateCopy } = useCopyToClipboard();
+  const { copied, copyText, updateCopy } = useCopyToClipboard();
 
+  const isDataCard = !data.owner;
   const handleCopy = () => {
-    updateCopy(data.prompt, data.id);
+    if (isDataCard) {
+      updateCopy(data.prompt, data.id);
+    } else {
+      copyText(data.prompt);
+    }
   };
 
   // Show "View Details" only if there is no owner (DataCard)

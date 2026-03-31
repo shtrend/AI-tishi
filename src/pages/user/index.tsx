@@ -129,6 +129,15 @@ const UserProfile = () => {
         })),
       ];
 
+      // MySpace 排序和自定义标签（导入时可恢复布局）
+      const items = userAuth?.data?.items || [];
+      const myspaceOrder = items.map((item: any) => ({
+        id: item.id,
+        type: item.type,
+        source: item.source,
+      }));
+      const customTags = userAuth?.data?.customTags || [];
+
       const exportData = {
         exportTime: new Date().toISOString(),
         prompts: userPromptsData.map((prompt: any) => ({
@@ -141,6 +150,8 @@ const UserProfile = () => {
         })),
         favorites,
         ...(favoriteDetails.length > 0 && { favoriteDetails }),
+        ...(myspaceOrder.length > 0 && { myspaceOrder }),
+        ...(customTags.length > 0 && { customTags }),
       };
 
       const dataStr = JSON.stringify(exportData, null, 2);
@@ -318,6 +329,12 @@ const UserProfile = () => {
           const results = await Promise.allSettled(tasks);
           successCount += results.filter((r) => r.status === "fulfilled" && r.value).length;
         }
+
+        // myspaceOrder 和 customTags 仅作为导出备份数据保留在 JSON 中
+        // 联网版导入时不恢复排序和标签：
+        // - 排序中的 prompt ID 是源用户的，导入后新建 prompt 有新 ID，无法对应
+        // - 覆盖式写入会破坏目标用户已有的排序和标签体系
+        // 本地版可安全使用这些字段（写入 localStorage，不涉及多用户冲突）
 
         setImporting(false);
 
@@ -617,7 +634,7 @@ const UserProfile = () => {
                                   "0%": "var(--ifm-color-primary)",
                                   "100%": "var(--ifm-color-primary-dark)",
                                 }}
-                                trailColor="var(--ifm-color-emphasis-200)"
+                                railColor="var(--ifm-color-emphasis-200)"
                                 showInfo={false}
                               />
                               <Text type="secondary" style={{ fontSize: 12, textAlign: "center" }}>
@@ -791,7 +808,7 @@ const UserProfile = () => {
                     <Translate id="title.dataManagement">数据管理</Translate>
                   </Space>
                 }>
-                <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+                <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
                   {/* Export Prompts */}
                   <Flex justify="space-between" align="center" style={{ padding: "12px 0", borderBottom: "1px solid var(--ifm-color-emphasis-200)" }}>
                     <Flex align="center" gap={20}>

@@ -1,9 +1,7 @@
-name: 🐳 Build and Push Docker Image
+name: 🐳 Build Offline Docker Image
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
 
 permissions:
   contents: read
@@ -13,9 +11,20 @@ env:
   IMAGE_NAME: chatgpt-shortcut
 
 jobs:
-  push_to_registry:
-    name: Push Docker image to Docker Hub and GHCR
+  check_branch:
+    name: Verify branch
     runs-on: ubuntu-latest
+    if: github.ref != 'refs/heads/offline'
+    steps:
+      - name: ❌ Wrong branch
+        run: |
+          echo "::error::This workflow must be triggered from the 'offline' branch. Current: ${{ github.ref }}"
+          exit 1
+
+  push_offline_image:
+    name: Build and push offline Docker image
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/offline'
     steps:
       - name: 🚚 Check out the repo
         uses: actions/checkout@v6
@@ -45,7 +54,14 @@ jobs:
         env:
           OWNER: "${{ github.repository_owner }}"
 
-      - name: 🏷️ Extract metadata (tags, labels) for Docker
+      - name: 📦 Read package.json version
+        id: pkg
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Read version: ${VERSION}"
+
+      - name: 🏷️ Generate Docker tags
         id: meta
         uses: docker/metadata-action@v6
         with:
@@ -53,10 +69,8 @@ jobs:
             ${{ vars.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
             ghcr.io/${{ env.GH_OWNER_LC }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest
+            type=raw,value=offline
+            type=raw,value=${{ steps.pkg.outputs.version }}-offline,enable=${{ steps.pkg.outputs.version != '' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
